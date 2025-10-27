@@ -1,0 +1,8 @@
+torch
+transformers
+datasets
+peft
+bitsandbytes
+PyPDF2
+PyMuPDF
+streamlit
