@@ -122,12 +122,12 @@ class LegalDocumentSummarizerFast:
         return dataset
 
     def fine_tune_model(self, dataset, output_dir="./legal_summarizer_fast"):
-        print("[*] Starting fine-tuning (1 epoch for faster training)...")
+        print("[*] Starting fine-tuning (3 epochs)...")
         training_args = TrainingArguments(
             output_dir=output_dir,
             per_device_train_batch_size=1,
             gradient_accumulation_steps=1,
-            num_train_epochs=1,
+            num_train_epochs=3,
             learning_rate=2e-4,
             fp16=True,
             logging_steps=5,
@@ -142,7 +142,7 @@ class LegalDocumentSummarizerFast:
 
         def data_collator(examples):
             batch = self.tokenizer([ex["text"] for ex in examples],
-                                   padding=True, truncation=True, max_length=1024, return_tensors="pt")
+                                   padding=True, truncation=True, max_length=2048, return_tensors="pt")
             batch["labels"] = batch["input_ids"].clone()
             return batch
 
