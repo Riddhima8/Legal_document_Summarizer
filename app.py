@@ -1,8 +1,7 @@
 import streamlit as st
 import torch
 import pickle
-import fitz
-import PyPDF2
+import pypdfium2 as pdfium
 
 st.set_page_config(page_title="Legal Document Summarizer", page_icon="⚖️")
 
@@ -31,15 +30,25 @@ st.title("⚖️ Legal Document Summarizer")
 def extract_text_from_pdf(uploaded_file):
     text = ""
     try:
-        doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-        for page in doc:
-            text += page.get_text()
-        doc.close()
-    except Exception:
-        uploaded_file.seek(0)
-        reader = PyPDF2.PdfReader(uploaded_file)
-        for p in reader.pages:
-            text += p.extract_text()
+        # Load the PDF document
+        pdf = pdfium.PdfDocument(uploaded_file)
+        
+        # Iterate over pages and extract text
+        for i in range(len(pdf)):
+            page = pdf.get_page(i)
+            text_page = page.get_textpage()
+            text += text_page.get_text_range()
+            text += "\n"  # Add newline between pages
+            
+            # Close resources
+            text_page.close()
+            page.close()
+            
+        pdf.close()
+    except Exception as e:
+        st.error(f"Error extracting text: {e}")
+        return ""
+        
     return text
 
 def summarize_document(document_text):

@@ -1,14 +1,14 @@
 # train_model.py
-import os
-import torch
-import pandas as pd
-from datasets import Dataset
-from transformers import AutoTokenizer, AutoModelForCausalLM, TrainingArguments, Trainer, BitsAndBytesConfig
-from peft import LoraConfig, get_peft_model, TaskType
-import PyPDF2
-import fitz  # PyMuPDF
+import argparse
 import pickle
 import warnings
+
+import pandas as pd
+import torch
+from datasets import Dataset
+from peft import LoraConfig, get_peft_model, TaskType
+from transformers import AutoModelForCausalLM, AutoTokenizer, Trainer, TrainingArguments
+
 warnings.filterwarnings("ignore")
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -17,6 +17,8 @@ if torch.cuda.is_available():
     print(f"GPU: {torch.cuda.get_device_name()}")
 
 class LegalDocumentSummarizerFast:
+    """Fine-tunes a chat LLM on prepared legal-document examples."""
+
     def __init__(self, model_name="Qwen/Qwen1.5-0.5B-Chat"):
         self.model_name = model_name
         self.device = device
@@ -24,25 +26,51 @@ class LegalDocumentSummarizerFast:
         self.model = None
         self.peft_model = None
 
-    def download_dataset(self, url: str, max_examples: int = 50):
-        print("[*] Downloading dataset...")
-        df = pd.read_csv(url)
+    def load_training_examples(self, csv_path: str, max_examples: int = 50):
+        """Load pre-processed rows from disk and build chat-style conversations."""
+
+        print(f"[*] Loading dataset from {csv_path}...")
+        df = pd.read_csv(csv_path)
         df = df.head(max_examples)
+
+        required_columns = {"Title", "Abstract", "DocumentText"}
+        missing_columns = required_columns.difference(df.columns)
+        if missing_columns:
+            raise ValueError(
+                "Dataset must contain columns: Title, Abstract, DocumentText. "
+                f"Missing: {', '.join(sorted(missing_columns))}"
+            )
 
         training_data = []
         for idx, row in df.iterrows():
-            title = str(row.get('Title', ''))
-            abstract = str(row.get('Abstract', ''))
-            if not abstract or abstract.lower() == 'nan' or len(abstract.strip()) < 10:
+            title = str(row.get("Title", "")).strip()
+            abstract = str(row.get("Abstract", "")).strip()
+            document_text = str(row.get("DocumentText", "")).strip()
+
+            if len(abstract) < 10 or len(document_text) < 100:
+                # Skip rows without enough signal for training
                 continue
-            training_data.append({
-                "id": f"legal_doc_{idx}",
-                "conversations": [
-                    {"from": "human", "value": f"Summarize:\nTitle: {title}\nDocument Content: [Full text here]"},
-                    {"from": "gpt", "value": f"**Summary:** {abstract}"}
-                ]
-            })
-        print(f"Loaded {len(training_data)} examples for training")
+
+            training_data.append(
+                {
+                    "id": f"legal_doc_{idx}",
+                    "conversations": [
+                        {
+                            "from": "human",
+                            "value": (
+                                "Summarize the following legal document in 2 paragraphs and provide key points.\n"
+                                f"Title: {title}\nDocument Content:\n{document_text}"
+                            ),
+                        },
+                        {"from": "gpt", "value": f"**Summary:** {abstract}"},
+                    ],
+                }
+            )
+
+        if not training_data:
+            raise ValueError("No valid rows found in dataset after filtering for content length.")
+
+        print(f"Loaded {len(training_data)} usable examples for training")
         return training_data
 
     # def setup_model_and_tokenizer(self):
@@ -150,7 +178,6 @@ class LegalDocumentSummarizerFast:
             model=self.peft_model,
             args=training_args,
             train_dataset=dataset,
-            tokenizer=self.tokenizer,
             data_collator=data_collator,
         )
 
@@ -165,10 +192,32 @@ class LegalDocumentSummarizerFast:
         print("[+] Pickle file saved: legal_summarizer.pkl")
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Fine-tune the legal summarizer on a prepared CSV dataset.")
+    parser.add_argument(
+        "--dataset_csv",
+        required=True,
+        help="Path to the preprocessed CSV containing Title, Abstract, DocumentText columns.",
+    )
+    parser.add_argument(
+        "--max_examples",
+        type=int,
+        default=50,
+        help="Upper bound on number of rows to use from the dataset (default: 50).",
+    )
+    parser.add_argument(
+        "--output_dir",
+        default="./legal_summarizer_fast",
+        help="Directory where the fine-tuned model and tokenizer will be stored.",
+    )
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    dataset_url = "https://docs.google.com/spreadsheets/d/11o7R3TRtREbDcxcbCMUERu5WRZsgLZtTaRFUhr4jLtk/export?format=csv"
+    args = parse_args()
+
     summarizer = LegalDocumentSummarizerFast()
-    training_data = summarizer.download_dataset(dataset_url, max_examples=50)
+    training_data = summarizer.load_training_examples(args.dataset_csv, max_examples=args.max_examples)
     summarizer.setup_model_and_tokenizer()
     dataset = summarizer.prepare_training_data(training_data)
-    summarizer.fine_tune_model(dataset)
+    summarizer.fine_tune_model(dataset, output_dir=args.output_dir)

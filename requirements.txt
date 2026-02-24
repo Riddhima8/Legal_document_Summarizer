@@ -2,7 +2,6 @@ torch
 transformers
 datasets
 peft
+pypdfium2
 bitsandbytes
-PyPDF2
-PyMuPDF
 streamlit
