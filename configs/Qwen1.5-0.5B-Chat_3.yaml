@@ -1,0 +1,47 @@
+model:
+  name: "Qwen/Qwen1.5-0.5B-Chat"
+  device: "auto"  # "auto" | "cuda" | "cpu"
+
+lora:
+  r: 16
+  alpha: 32
+  dropout: 0.1
+  target_modules:
+    - "q_proj"
+    - "k_proj"
+    - "v_proj"
+    - "o_proj"
+    - "gate_proj"
+    - "up_proj"
+    - "down_proj"
+
+data:
+  root: "dataset"
+  use_in_abs: true
+  use_uk_abs: true
+  use_in_ext: true
+  max_examples: null        # per train split; null = use all
+  max_test_examples: null   # per test split / ROUGE; null = use all
+  min_abstract_length: 10
+  min_document_length: 100
+
+training:
+  output_dir: "training_output"
+  epochs: 3
+  learning_rate: 2.0e-4
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 1
+  max_seq_length: 2048
+  logging_steps: 5
+  save_steps: 50
+  save_total_limit: 2
+  fp16: "auto"   # "auto" | true | false
+
+evaluation:
+  enabled: true
+  metric: "rouge"
+  generation:
+    max_new_tokens: 256
+    temperature: 0.8
+    top_p: 0.9
+    do_sample: true

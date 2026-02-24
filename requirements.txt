@@ -5,3 +5,7 @@ peft
 pypdfium2
 bitsandbytes
 streamlit
+evaluate
+absl-py
+nltk
+rouge_score

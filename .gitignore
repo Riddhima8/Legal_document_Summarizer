@@ -1,5 +1,5 @@
 .venv/
 __pycache__/
-legal_summarizer_fast/
+training_output/
 *.pkl
 dataset/
