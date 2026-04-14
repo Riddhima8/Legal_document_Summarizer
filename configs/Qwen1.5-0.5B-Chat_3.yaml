@@ -20,7 +20,7 @@ data:
   use_in_abs: true
   use_uk_abs: true
   use_in_ext: true
-  max_examples: null        # per train split; null = use all
+  max_examples: null       # per train split; null = use all
   max_test_examples: null   # per test split / ROUGE; null = use all
   min_abstract_length: 10
   min_document_length: 100
@@ -30,9 +30,9 @@ training:
   epochs: 3
   learning_rate: 2.0e-4
   per_device_train_batch_size: 1
-  gradient_accumulation_steps: 1
+  gradient_accumulation_steps: 4
   max_seq_length: 2048
-  logging_steps: 5
+  logging_steps: 1
   save_steps: 50
   save_total_limit: 2
   fp16: "auto"   # "auto" | true | false

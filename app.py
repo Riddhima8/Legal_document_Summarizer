@@ -1,73 +1,78 @@
 import streamlit as st
 import torch
-import pickle
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from peft import PeftModel
+
 import pypdfium2 as pdfium
 
 st.set_page_config(page_title="Legal Document Summarizer", page_icon="⚖️")
 
+MODEL_PATH = "training_output"  # Your saved PEFT model folder
+BASE_MODEL_NAME = "Qwen/Qwen1.5-0.5B-Chat"  # e.g., Qwen-1.5B-Chat
+
 # Load model and tokenizer
 @st.cache_resource
 def load_model():
+    # 1. Don't manually define 'device' for the model
     try:
-        with open("legal_summarizer.pkl", "rb") as f:
-            tokenizer, model = pickle.load(f)
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        model.to(device)
-        return tokenizer, model, device
+        tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
+
+        # 2. Load the base model with auto mapping
+        base_model = AutoModelForCausalLM.from_pretrained(
+            BASE_MODEL_NAME,
+            device_map="auto",  # This handles the heavy lifting
+            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+            trust_remote_code=True
+        )
+
+        # 3. Load the LoRA adapter
+        model = PeftModel.from_pretrained(base_model, MODEL_PATH)
+        
+        # ❌ REMOVE THIS LINE: model.to(device) 
+        # It conflicts with device_map="auto"
+        
+        model.eval()
+        
+        # 4. We still need to know where the 'inputs' go
+        # We'll grab the device from the first model parameter
+        current_device = next(model.parameters()).device
+        
+        return tokenizer, model, current_device
     except Exception as e:
         st.error(f"Error loading model: {e}")
         st.stop()
 
 # Load the model
-try:
-    tokenizer, model, device = load_model()
-except Exception as e:
-    st.error(f"Failed to load model: {e}")
-    st.stop()
+tokenizer, model, device = load_model()
 
 st.title("⚖️ Legal Document Summarizer")
 
 def extract_text_from_pdf(uploaded_file):
     text = ""
     try:
-        # Load the PDF document
         pdf = pdfium.PdfDocument(uploaded_file)
-        
-        # Iterate over pages and extract text
         for i in range(len(pdf)):
             page = pdf.get_page(i)
             text_page = page.get_textpage()
-            text += text_page.get_text_range()
-            text += "\n"  # Add newline between pages
-            
-            # Close resources
+            text += text_page.get_text_range() + "\n"
             text_page.close()
             page.close()
-            
         pdf.close()
     except Exception as e:
         st.error(f"Error extracting text: {e}")
-        return ""
-        
     return text
 
 def summarize_document(document_text):
-    # Extract title from first line of document
     lines = document_text.split('\n')
     title = lines[0] if lines else "Legal Document"
 
-    # Dynamic target length based on input size
     total_words = max(1, len(document_text.split()))
-    target_summary_words = max(80, min(300, int(total_words * 0.10)))  # ~10% of doc, clamped
-    # Rough words-to-tokens conversion (~0.75 words per token)
+    target_summary_words = max(80, min(300, int(total_words * 0.10)))
     target_tokens = max(80, min(520, int(target_summary_words / 0.75)))
     min_new_tokens = max(60, int(target_tokens * 0.6))
     max_new_tokens = max(min_new_tokens + 40, int(target_tokens * 1.2))
 
-    # Keep model input under a safe limit
     document_content = document_text[:12000]
-
-    # Prompt for scalable summary and 3–4 key points
     prompt = (
         "You are a legal analyst. Write a concise summary of about "
         f"{target_summary_words} words (2 short paragraphs if needed), then list 3–4 important points.\n\n"
@@ -77,7 +82,6 @@ def summarize_document(document_text):
         "Summary:\n[paragraphs]\n\nImportant Points:\n- [point 1]\n- [point 2]\n- [point 3]\n- [point 4]"
     )
 
-    # Use chat formatting the model was trained on
     formatted_text = f"<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n"
 
     inputs = tokenizer(formatted_text, return_tensors="pt", truncation=True, max_length=14000).to(device)
@@ -92,98 +96,13 @@ def summarize_document(document_text):
             do_sample=True,
             no_repeat_ngram_size=3,
             pad_token_id=tokenizer.eos_token_id,
-            early_stopping=False,
-            repetition_penalty=1.05,
-            length_penalty=1.0
         )
 
-    # Decode and extract only the assistant's response
     full_response = tokenizer.decode(outputs[0], skip_special_tokens=False)
-
-    # Extract only the assistant's part
     if "<|im_start|>assistant" in full_response:
         response = full_response.split("<|im_start|>assistant")[-1].split("<|im_end|>")[0].strip()
-        response = response.replace("<|im_end|>", "").strip()
-
-        # Stronger fallback if too short or off-format
-        if len(response.split()) < int(target_summary_words * 0.6) or "Important Points:" not in response:
-            simple_prompt = (
-                "Summarize the following legal text in about "
-                f"{target_summary_words} words, then list 3–4 important points as bullets.\n\n"
-                f"{document_text[:12000]}"
-            )
-            simple_formatted = f"<|im_start|>user\n{simple_prompt}<|im_end|>\n<|im_start|>assistant\n"
-            inputs2 = tokenizer(simple_formatted, return_tensors="pt", truncation=True, max_length=14000).to(device)
-            with torch.no_grad():
-                outputs2 = model.generate(
-                    **inputs2,
-                    max_new_tokens=max_new_tokens,
-                    min_new_tokens=min_new_tokens,
-                    temperature=0.8,
-                    top_p=0.9,
-                    do_sample=True,
-                    no_repeat_ngram_size=3,
-                    pad_token_id=tokenizer.eos_token_id,
-                    early_stopping=False,
-                    repetition_penalty=1.05,
-                    length_penalty=1.0,
-                )
-            full_response2 = tokenizer.decode(outputs2[0], skip_special_tokens=False)
-            if "<|im_start|>assistant" in full_response2:
-                candidate = full_response2.split("<|im_start|>assistant")[-1].split("<|im_end|>")[0].strip()
-                # If still missing bullets, generate bullets separately and compose final output
-                if "Important Points:" not in candidate:
-                    # Extract summary segment if present
-                    summary_text = candidate
-                    if "Summary:" in candidate:
-                        summary_text = candidate.split("Summary:", 1)[-1].strip()
-
-                    bullet_prompt = (
-                        "From the following legal document, list exactly 3–4 key points as bullets. "
-                        "Return only bullets starting with '- ' and no other text.\n\n"
-                        f"Document Content:\n{document_text[:12000]}"
-                    )
-                    bullet_formatted = f"<|im_start|>user\n{bullet_prompt}<|im_end|>\n<|im_start|>assistant\n"
-                    inputs_b = tokenizer(bullet_formatted, return_tensors="pt", truncation=True, max_length=14000).to(device)
-                    with torch.no_grad():
-                        out_b = model.generate(
-                            **inputs_b,
-                            max_new_tokens=220,
-                            min_new_tokens=60,
-                            temperature=0.3,
-                            top_p=0.9,
-                            do_sample=False,
-                            no_repeat_ngram_size=3,
-                            pad_token_id=tokenizer.eos_token_id,
-                            early_stopping=True,
-                        )
-                    bullets_full = tokenizer.decode(out_b[0], skip_special_tokens=False)
-                    if "<|im_start|>assistant" in bullets_full:
-                        bullets = bullets_full.split("<|im_start|>assistant")[-1].split("<|im_end|>")[0].strip()
-                    else:
-                        bullets = bullets_full.strip()
-
-                    # Ensure bullet formatting
-                    bullet_lines = [line.strip() for line in bullets.splitlines() if line.strip().startswith("-")]
-                    bullet_lines = bullet_lines[:4]
-                    if len(bullet_lines) < 3:
-                        # As a minimal fallback, synthesize headings if model failed
-                        bullet_lines = ["- Scope of services",
-                                        "- Commercial terms/fees",
-                                        "- Obligations and responsibilities",
-                                        "- Signatures/term/termination"]
-
-                    composed = "Summary:\n" + summary_text.strip() + "\n\nImportant Points:\n" + "\n".join(bullet_lines)
-                    return composed
-                return candidate
-
         return response
-    else:
-        # Fallback if parsing fails - try to get the last part
-        parts = full_response.split("<|im_end|>")
-        if len(parts) > 1:
-            return parts[-2].strip()
-        return full_response
+    return full_response
 
 uploaded_pdf = st.file_uploader("📄 Upload a Legal PDF", type=["pdf"])
 
