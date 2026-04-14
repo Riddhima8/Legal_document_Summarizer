@@ -1,5 +1,4 @@
 .venv/
 __pycache__/
-training_output/
 *.pkl
 dataset/
